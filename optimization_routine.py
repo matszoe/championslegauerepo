@@ -4,6 +4,8 @@ import pyomo as pyo
 
 def load_input_data(input_file_path):
     
+    input_data = []
+
     return input_data
 
 def setup_optimization_problem():
