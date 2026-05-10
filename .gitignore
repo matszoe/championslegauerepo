@@ -208,3 +208,6 @@ __marimo__/
 
 .DS_Store
 .vscode/settings.json
+
+02-RESULTS/**
+!02-RESULTS/placeholder.csv

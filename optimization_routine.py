@@ -10,6 +10,7 @@ import pandapower as pp
 from pandapower.pypower.makeYbus import makeYbus
 from tqdm import tqdm
 from pyomo.opt import SolverFactory
+import os
 
 
 def load_existing_aggregation_data(scenario_name):
@@ -50,8 +51,8 @@ def map_load_time_series():
 
 def compute_hp_flexibility(
     correlation_df: pd.DataFrame,
-    T_min_op: float = -8.0,    # Außentemperatur bei der WP auf Volllast läuft
-    T_max_op: float = 15.0,    # Außentemperatur bei der WP abschaltet
+    T_min_op: float = -8.0, 
+    T_max_op: float = 15.0,
 ) -> pd.DataFrame:
     """
     Computes the time-varying HP flexibility bounds for a single timestep
@@ -733,12 +734,43 @@ def solve_OPF(
         'obj_value': pyo.value(model.obj),
     }
 
+def save_results(results: dict):
+    """
+    Saves the optimization results 
+
+    Parameters
+    ----------
+    results : dict returned by solve_OPF()
+    """
+    output_dir = f"02-RESULTS/{config.scenario}_{config.timestep_under_consideration.strftime('%Y-%m-%d_%H-%M-%S')}"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Save PCC results
+    pcc_df = pd.DataFrame({
+        'time': list(results['P_pcc'].keys()),
+        'P_pcc': list(results['P_pcc'].values()),
+        'Q_pcc': list(results['Q_pcc'].values()),
+    })
+    pcc_df.to_csv(os.path.join(output_dir, f"pcc_results.csv"), index=False)
+
+    # Save flexibility results
+    flex_data = []
+    for (t, bus), P_flex in results['P_flex'].items():
+        Q_flex = results['Q_flex'][(t, bus)]
+        flex_data.append({'time': t, 'bus': bus, 'P_flex': P_flex, 'Q_flex': Q_flex})
+    flex_df = pd.DataFrame(flex_data)
+    flex_df.to_csv(os.path.join(output_dir, f"flex_results.csv"), index=False)
+
 
 def main():
     """
     Main function to run the optimization routine for a single scenario and time step.
     """
-    print("Starting program...")
+    print("""\
+    #######################################
+            Starting program...
+    #######################################
+    """)
     if config.load_existing_aggregation:
         print(f"Loading existing aggregation data for scenario '{config.scenario_name}'")
         aggregation_df = load_existing_aggregation_data(config.scenario_name)
@@ -815,6 +847,10 @@ def main():
     print("Solving OPF model with Gurobi")
     results = solve_OPF(full_model, config.alpha, config.beta)
     print(f"Solver status: {results}")
+
+    ## Saving results
+    print("Saving results")
+    save_results(results)
 
 
 
