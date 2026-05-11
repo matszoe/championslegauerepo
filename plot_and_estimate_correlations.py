@@ -56,9 +56,6 @@ def estimate_correlations(load_df):
 
     results_df = pd.DataFrame(results).T
 
-    # save aggregation data
-    filename = f"01-PROCESSED-DATA/aggregation-data/base_scenario/correlation_data.csv"
-    results_df.to_csv(filename, index=False)
     return results_df
 
 def add_battery_capacity(correlation_df):
@@ -69,10 +66,6 @@ def add_battery_capacity(correlation_df):
     for i in battery_data.index:
         if battery_data.loc[i,"label"] == "FCS_highway" or battery_data.loc[i,"label"] == "FCS_shopping_mall":
             correlation_df.loc[i, "cap_battery_mw"] = battery_data.loc[i,"load_added_MW"]
-
-    # save aggregation data
-    filename = f"01-PROCESSED-DATA/aggregation-data/with_battery_scenario/correlation_data.csv"
-    correlation_df.to_csv(filename, index=False)
 
     return correlation_df
 
