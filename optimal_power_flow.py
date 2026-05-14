@@ -436,7 +436,7 @@ def add_aggregated_flexibility_constraints(
 
     def soc_rule(m, t, k):
         return  (m.P_flex[t, k]**2 + m.Q_flex[t, k]**2
-            <=   m.d_soc[t, k]**2)
+            <=   m.d_soc[k]**2)
 
     model.c_flex_soc = pyo.Constraint(model.T, model.B_soc, rule=soc_rule)
 
