@@ -48,11 +48,16 @@ def main():
     """
     Main function to run the optimization routine for a single scenario and time step.
     """
-    print("""\
+    print("""
+          
     ###########################################################
                         Starting program...
     ###########################################################
     """)
+    print(f"Running scenario: {config.scenario}")
+    print("Single timestep optimization")
+    print(f"Time step: {config.single_timestep}")
+
 
     print("Mapping load time series and estimating correlations to compute aggregation data")
     load_df = nfa.map_load_time_series()
@@ -60,7 +65,11 @@ def main():
     if config.scenario == "with_battery":
         correlation_df = corr.add_battery_capacity(correlation_df)
     
-    hp_flex = nfa.compute_hp_flexibility(correlation_df)
+    ## load temperature of timestep
+    temp_df = pd.read_csv("00-INPUT-DATA/TEMP-DATA/TEMP_timeseries.csv", parse_dates=["date"], index_col="date")
+    temperature = temp_df.loc[config.single_timestep, "temperature_2m"]
+
+    hp_flex = nfa.compute_hp_flexibility(correlation_df, temperature)
     pv_df = pd.read_csv("00-INPUT-DATA/PV-DATA/PV_timeseries.csv", parse_dates=["time"], index_col="time")
     if pv_df.index.tz is None:
         pv_df.index = pv_df.index.tz_localize('UTC')
@@ -120,7 +129,7 @@ def main():
     ## Solve OPF
     print("Solving OPF model with Gurobi")
     results = opf.solve_OPF(full_model, config.alpha, config.beta)
-    print(f"Solver status: {results}")
+    #print(f"Solver status: {results}")
 
     ## Saving results
     print("Saving results")

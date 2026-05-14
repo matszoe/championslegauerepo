@@ -24,6 +24,7 @@ def get_q_heat(profile: pd.DataFrame, hour: int, temperature: float) -> float:
 
 def compute_hp_flexibility(
     correlation_df: pd.DataFrame,
+    temperature: float,
     T_min_op: float = -8.0, 
     T_max_op: float = 15.0,
 ) -> pd.DataFrame:
@@ -45,10 +46,6 @@ def compute_hp_flexibility(
     -------
     DataFrame with index=bus_id, columns=['P_hp_max', 'P_hp_min']
     """
-
-    ## load temperature of timestep
-    temp_df = pd.read_csv("00-INPUT-DATA/TEMP-DATA/TEMP_timeseries.csv", parse_dates=["date"], index_col="date")
-    temperature = temp_df.loc[config.single_timestep, "temperature_2m"]
 
     # normalized temperature factor (0 at T_max_op, 1 at T_min_op)
     f_temp = np.clip(
@@ -77,6 +74,14 @@ def compute_nodal_approx_for_linear_constraints(
     h : (m,)   right side for FOR_agg = {(P,Q) | H @ [P,Q] <= h}
     """
     tan_phi = np.sqrt(1 - cos_phi_min**2) / cos_phi_min
+
+    if P_pv_max < 1e-6 and P_hp_max < 1e-6:
+        H = np.array([[ 1, 0],
+                        [-1, 0],
+                        [ 0, 1],
+                        [ 0,-1]])
+        h = np.zeros(4)
+        return H, h
 
     # --- Constraint matrices ---
 
@@ -142,7 +147,7 @@ def compute_nodal_approx_for_linear_constraints(
         b2_pv + d_hat,   
         b_hat + b2_hp,
     ])
-
+    h[np.abs(h) < 1e-6] = 0.0
     return H, h
 
 
@@ -169,6 +174,11 @@ def compute_nodal_approx_for_with_battery(
     h_lin : (m,)    linear constraint RHS
     d_soc : float   SOC radius, i.e. ||x|| <= d_soc
     """
+
+    if P_pv_max < 1e-6 and P_hp_max < 1e-6 and S_bat_max < 1e-6:
+        H = np.array([[ 1, 0], [-1, 0], [ 0, 1], [ 0,-1]])
+        h = np.zeros(4)
+        return H, h, 0.0
 
     # Step 1: linear outer approx for PV + HP
     H_lin, h_lin = compute_nodal_approx_for_linear_constraints(
@@ -234,6 +244,7 @@ def compute_nodal_approx_for_with_battery(
     h_lin_final = h_lin + d_hat
     d_soc_final = S_bat_max + h_hat
 
+    h_lin_final[np.abs(h_lin_final) < 1e-6] = 0.0
     return H_lin_final, h_lin_final, d_soc_final
 
 def map_load_time_series():

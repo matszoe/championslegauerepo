@@ -55,6 +55,7 @@ def estimate_correlations(load_df):
         }
 
     results_df = pd.DataFrame(results).T
+    results_df.index = load_df.columns
 
     return results_df
 

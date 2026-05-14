@@ -122,7 +122,10 @@ def read_net_from_csv(folder, baseMVA=10, DiB_version = True):
 
             # Adding corresponding entry in results DataFrame
             res_row = pd.DataFrame({'vm_pu': [Vm], 'va_degree': [Va_degrees], 'p_mw': [Pd], 'q_mvar': [Qd]}, index=[bus_ID])
-            res_bus = pd.concat([res_bus, res_row])
+            frames = [df for df in [res_bus, res_row]
+                if not df.empty and not df.isna().all(axis=None)]
+
+            res_bus = pd.concat(frames, ignore_index=True)
 
             if Pd != 0 and Qd != 0:
                 # Adding load to network for this bus

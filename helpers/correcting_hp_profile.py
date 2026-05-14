@@ -35,4 +35,4 @@ def load_heat_demand_profile() -> pd.DataFrame:
 
 test = load_heat_demand_profile()
 
-test.to_csv("00-INPUT-DATA/HP-DATA/hp_profile.csv", index=False)
+test.to_csv("00-INPUT-DATA/HP-DATA/hp_profile.csv", index=True)
