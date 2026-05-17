@@ -41,15 +41,15 @@ def generate_ffor_directions(n_directions: int):
     return directions
 
 
-def save_multi_direction_results(all_results: list[dict]):
+def save_multi_direction_results(all_results, time_steps, duration_h):
     """
     Saves optimization results for multiple alpha/beta directions.
     """
 
     output_dir = (
         f"01-RESULTS/multi_ts_{config.scenario}_"
-        f"{config.multi_timestep_interval[0].strftime('%m-%d_%H-%M')}--"
-        f"{config.multi_timestep_interval[1].strftime('%m-%d_%H-%M')}"
+        f"{time_steps[0].strftime('%m-%d_%H-%M')}_"
+        f"d{duration_h}h"
     )
     os.makedirs(output_dir, exist_ok=True)
 
@@ -72,6 +72,7 @@ def save_multi_direction_results(all_results: list[dict]):
 
         vertex_rows.append({
             "direction_id": direction_id,
+            "duration_h": duration_h,
             "theta_rad": theta_rad,
             "theta_deg": theta_deg,
             "alpha": alpha,
@@ -90,6 +91,7 @@ def save_multi_direction_results(all_results: list[dict]):
         for t in res["P_pcc"].keys():
             pcc_rows.append({
                 "direction_id": direction_id,
+                "duration_h": duration_h,
                 "theta_rad": theta_rad,
                 "theta_deg": theta_deg,
                 "alpha": alpha,
@@ -104,6 +106,7 @@ def save_multi_direction_results(all_results: list[dict]):
         for (t, bus), P_flex in res["P_flex"].items():
             flex_rows.append({
                 "direction_id": direction_id,
+                "duration_h": duration_h,
                 "theta_rad": theta_rad,
                 "theta_deg": theta_deg,
                 "alpha": alpha,
@@ -156,52 +159,16 @@ def save_results(results: dict):
     flex_df = pd.DataFrame(flex_data)
     flex_df.to_csv(os.path.join(output_dir, f"flex_results.csv"), index=False)
 
-
-def main():
+def build_per_timestep_data(time_steps, correlation_df, pv_cf, hp_base_df, net_data):
     """
-    Main function to run the optimization routine for a single scenario and time step.
+    For each timestep, builds the device-flex DataFrame and the nodal
+    approximation (H, h, d_soc) for every node.
+
+    Returns
+    -------
+    aggregation_per_timestep : dict[Timestamp, DataFrame] with columns [H, h, d_soc]
+    device_flex_per_timestep : dict[Timestamp, DataFrame] with device-flex columns
     """
-    print("""
-          
-    ###########################################################
-                        Starting program...
-    ###########################################################
-    """)
-    print(f"Running scenario: {config.scenario}")
-    print("Multi timestep optimization")
-    print(f"Time interval: {config.multi_timestep_interval[0]} to {config.multi_timestep_interval[1]}")
-    time_steps = pd.date_range(
-        start=config.multi_timestep_interval[0],
-        end=config.multi_timestep_interval[1],
-        freq="h"
-    )
-    print("Mapping load time series and estimating correlations to compute aggregation data")
-    net_data = opf.load_network_and_extract()
-    load_df = nfa.map_load_time_series()
-    correlation_df = corr.estimate_correlations(load_df)
-    if config.scenario == "with_battery":
-        correlation_df = corr.add_battery_capacity(correlation_df)
-    
-    temp_df = pd.read_csv("00-INPUT-DATA/TEMP-DATA/TEMP_timeseries.csv",parse_dates=['date'],index_col='date')
-    temp_df.index = pd.DatetimeIndex(temp_df.index).tz_localize(None)
-    missing_temp = time_steps.difference(temp_df.index)
-    if len(missing_temp) > 0:
-        raise ValueError(f"Missing temperature data for: {missing_temp}")
-
-
-    hp_base_df = pd.DataFrame(index=correlation_df.index, columns=time_steps)
-    for t in time_steps:
-        temp_t = float(temp_df.loc[t, 'temperature_2m'])
-        hp_base_t = nfa.compute_hp_baseline(correlation_df,temp_t)
-        hp_base_df[t] = hp_base_t['P_hp_max'] / net_data["S_base"]
-
-    pv_df = pd.read_csv("00-INPUT-DATA/PV-DATA/PV_timeseries.csv", parse_dates=["time"], index_col="time")
-    pv_df.index = pd.DatetimeIndex(pv_df.index).tz_localize(None)
-    missing_pv = time_steps.difference(pv_df.index)
-    if len(missing_pv) > 0:
-        raise ValueError(f"Missing PV data for: {missing_pv}")
-    pv_cf = pv_df.loc[time_steps, "electricity"]
-  
     aggregation_per_timestep = {}
     device_flex_per_timestep = {}
 
@@ -215,29 +182,25 @@ def main():
                 "P_dis_max",
                 "S_bat_max",
             ],
-            index=correlation_df.index
+            index=correlation_df.index,
         )
 
-        # PV: positive Flexibilität durch Curtailment gegenüber Baseline-Erzeugung
+        # PV: positive flexibility via curtailment
         device_flex_t["P_PV_max"] = (
             pv_cf.loc[t] * correlation_df["cap_pv_mw"] / net_data["S_base"]
         )
 
-        # HP: Baseline aus deinem temperaturabhängigen Modell
+        # HP baseline (temperature-dependent)
         P_hp_base = hp_base_df[t]
-
-        # HP: technische Nennleistung
         P_hp_rated = correlation_df["cap_hp_mw"] / net_data["S_base"]
 
-        # Positive Flexibilität: HP kann bis auf 0 reduziert werden
+        # Positive flex: HP can ramp down to 0
         device_flex_t["P_hp_flex_max"] = P_hp_base
-
-        # Negative Flexibilität: HP kann bis zur Nennleistung hochfahren
+        # Negative flex: HP can ramp up to rated
         device_flex_t["P_hp_flex_min"] = P_hp_base - P_hp_rated
 
         if config.scenario == "with_battery":
             P_bat_rated = correlation_df["cap_battery_mw"] / net_data["S_base"]
-
             device_flex_t["P_chg_max"] = P_bat_rated
             device_flex_t["P_dis_max"] = P_bat_rated
             device_flex_t["S_bat_max"] = P_bat_rated
@@ -247,17 +210,14 @@ def main():
             device_flex_t["S_bat_max"] = 0.0
 
         aggregation_df_t = pd.DataFrame(
-            columns=["H", "h", "d_soc"],
-            index=device_flex_t.index
+            columns=["H", "h", "d_soc"], index=device_flex_t.index
         )
 
-        for node in tqdm(device_flex_t.index, desc=f"Computing nodal approximations for {t}"):
-
+        for node in tqdm(device_flex_t.index,
+                         desc=f"Nodal approximations for {t}"):
             P_pv_max = float(device_flex_t.loc[node, "P_PV_max"])
-
             P_hp_flex_min = float(device_flex_t.loc[node, "P_hp_flex_min"])
             P_hp_flex_max = float(device_flex_t.loc[node, "P_hp_flex_max"])
-
             P_chg_max = float(device_flex_t.loc[node, "P_chg_max"])
             P_dis_max = float(device_flex_t.loc[node, "P_dis_max"])
             S_bat_max = float(device_flex_t.loc[node, "S_bat_max"])
@@ -279,60 +239,36 @@ def main():
                 )
                 d_soc = 0.0
 
-            aggregation_df_t.loc[node] = {
-                "H": H,
-                "h": h,
-                "d_soc": d_soc,
-            }
+            aggregation_df_t.loc[node] = {"H": H, "h": h, "d_soc": d_soc}
+
         device_flex_per_timestep[t] = device_flex_t.copy()
         aggregation_per_timestep[t] = aggregation_df_t
 
-    ## Load network and set up OPF model
-    print("Loading network data and setting up OPF")
-    bus_lookup = net_data["net"]._pd2ppc_lookups['bus']
-    device_flex_per_timestep = {
-        t: df.set_index(df.index.map(lambda i: int(bus_lookup[i])))
-        for t, df in device_flex_per_timestep.items()
-    }
-    aggregation_per_timestep = {
-        t: df.set_index(df.index.map(lambda i: int(bus_lookup[i])))
-        for t, df in aggregation_per_timestep.items()
-    }
-    hp_base_df.index = [int(bus_lookup[i]) for i in hp_base_df.index]
+    return aggregation_per_timestep, device_flex_per_timestep
 
-    full_model = opf.setup_multi_timestep_OPF(
-        load_df,
-        net_data,
-        time_steps,
-        aggregation_per_timestep,
-        device_flex_per_timestep,
-        hp_base_df,
-        temp_df,
-        )
 
-    print("Solving OPF model with Gurobi for multiple FFOR directions")
-
+def solve_all_directions(full_model, time_steps, duration_h):
+    """
+    Solves the OPF for every FFOR direction and returns the list of result dicts.
+    Each duration gets its own log subdirectory so logs don't get overwritten.
+    """
     directions = generate_ffor_directions(config.n_ffor_directions)
+
     log_dir = (
         f"01-RESULTS/multi_ts_{config.scenario}_"
-        f"{config.multi_timestep_interval[0].strftime('%m-%d_%H-%M')}--"
-        f"{config.multi_timestep_interval[1].strftime('%m-%d_%H-%M')}/gurobi_logs"
+        f"{time_steps[0].strftime('%m-%d_%H-%M')}_d{duration_h}h/gurobi_logs"
     )
     os.makedirs(log_dir, exist_ok=True)
 
     all_results = []
-
-    for direction in tqdm(directions, desc="Solving FFOR directions"):
+    for direction in tqdm(directions, desc=f"FFOR directions (d={duration_h}h)"):
         direction_id = direction["direction_id"]
-        theta_rad = direction["theta_rad"]
         theta_deg = direction["theta_deg"]
         alpha = direction["alpha"]
         beta = direction["beta"]
 
-        print(
-            f"\nSolving direction {direction_id + 1}/{len(directions)}: "
-            f"theta={theta_deg:.1f}°, alpha={alpha:.4f}, beta={beta:.4f}"
-        )
+        print(f"\n  Direction {direction_id + 1}/{len(directions)}: "
+              f"theta={theta_deg:.1f}°, alpha={alpha:.4f}, beta={beta:.4f}")
 
         res = opf.solve_OPF(
             full_model,
@@ -341,16 +277,90 @@ def main():
             log_file=os.path.join(log_dir, f"direction_{direction_id:02d}.log"),
         )
 
-        res["direction_id"] = direction_id
-        res["theta_rad"] = theta_rad
-        res["theta_deg"] = theta_deg
-        res["alpha"] = alpha
-        res["beta"] = beta
-
+        # Tag the result with direction metadata for downstream saving
+        res.update({
+            "direction_id": direction_id,
+            "theta_rad": direction["theta_rad"],
+            "theta_deg": theta_deg,
+            "alpha": alpha,
+            "beta": beta,
+        })
         all_results.append(res)
 
-    print("Saving multi-direction results")
-    save_multi_direction_results(all_results)
+    return all_results
+
+def main():
+    print("Starting program...")
+    print(f"Scenario: {config.scenario}")
+
+    # --- ONE-TIME SETUP (independent of duration) ---
+    net_data = opf.load_network_and_extract()
+    load_df = nfa.map_load_time_series()
+    correlation_df = corr.estimate_correlations(load_df)
+    if config.scenario == "with_battery":
+        correlation_df = corr.add_battery_capacity(correlation_df)
+
+    temp_df = pd.read_csv("00-INPUT-DATA/TEMP-DATA/TEMP_timeseries.csv",
+                          parse_dates=['date'], index_col='date')
+    temp_df.index = pd.DatetimeIndex(temp_df.index).tz_localize(None)
+
+    pv_df = pd.read_csv("00-INPUT-DATA/PV-DATA/PV_timeseries.csv",
+                        parse_dates=["time"], index_col="time")
+    pv_df.index = pd.DatetimeIndex(pv_df.index).tz_localize(None)
+
+    # --- DURATION SWEEP ---
+    for duration_h in config.sustained_durations_h:
+        print(f"\n{'='*60}\nSolving FFOR for sustained duration = {duration_h} h\n{'='*60}")
+
+        time_steps = pd.date_range(
+            start=config.start_time,
+            periods=duration_h,            # exactly N hourly slots
+            freq=config.timestep_freq,
+        )
+
+        # Validate data coverage
+        missing_temp = time_steps.difference(temp_df.index)
+        missing_pv = time_steps.difference(pv_df.index)
+        if len(missing_temp) or len(missing_pv):
+            raise ValueError(f"Missing data for duration {duration_h}h: "
+                             f"temp={list(missing_temp)}, pv={list(missing_pv)}")
+
+        pv_cf = pv_df.loc[time_steps, "electricity"]
+
+        # --- HP baseline per timestep ---
+        hp_base_df = pd.DataFrame(index=correlation_df.index, columns=time_steps)
+        for t in time_steps:
+            temp_t = float(temp_df.loc[t, 'temperature_2m'])
+            hp_base_t = nfa.compute_hp_baseline(correlation_df, temp_t)
+            hp_base_df[t] = hp_base_t['P_hp_max'] / net_data["S_base"]
+
+        # --- Per-timestep device flex + nodal approximation ---
+        aggregation_per_timestep, device_flex_per_timestep = \
+            build_per_timestep_data(time_steps, correlation_df, pv_cf,
+                                    hp_base_df, net_data)
+
+        # --- Bus reindexing ---
+        bus_lookup = net_data["net"]._pd2ppc_lookups['bus']
+        device_flex_per_timestep = {
+            t: df.set_index(df.index.map(lambda i: int(bus_lookup[i])))
+            for t, df in device_flex_per_timestep.items()
+        }
+        aggregation_per_timestep = {
+            t: df.set_index(df.index.map(lambda i: int(bus_lookup[i])))
+            for t, df in aggregation_per_timestep.items()
+        }
+        hp_base_df_renamed = hp_base_df.copy()
+        hp_base_df_renamed.index = [int(bus_lookup[i]) for i in hp_base_df.index]
+
+        # --- Build model, solve all directions, save ---
+        full_model = opf.setup_multi_timestep_OPF(
+            load_df, net_data, time_steps,
+            aggregation_per_timestep, device_flex_per_timestep,
+            hp_base_df_renamed, temp_df,
+        )
+
+        all_results = solve_all_directions(full_model, time_steps, duration_h)
+        save_multi_direction_results(all_results, time_steps, duration_h)
 
 
 if __name__ == "__main__":
